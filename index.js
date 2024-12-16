@@ -109,7 +109,7 @@ app.post('/predict', upload.single('image'), async (req, res) => {
 app.get('/', (req, res) => res.send('Backend is running!'));
 
 // Start server
-app.listen(port, async () => {
-  await loadModel();  // Pastikan model diload saat server mulai
-  console.log(`Server is running on http://localhost:${port}`);
-});
+app.listen(port, '0.0.0.0', async () => {
+    await loadModel();
+    console.log(`Server is running on http://localhost:${port}`);
+  });  
