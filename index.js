@@ -29,9 +29,13 @@ const predictionsCollection = firestore.collection('predictions');
 // Load model dari Cloud Storage
 let model;
 async function loadModel() {
-  const modelPath = `gs://${bucketName}/${modelFileName}`;
-  model = await tf.loadGraphModel(modelPath);
-  console.log('Model loaded successfully!');
+  try {
+    const modelPath = `gs://${bucket-mlgc-mita}/${model.json}`;
+    model = await tf.loadGraphModel(modelPath);
+    console.log('Model loaded successfully!');
+  } catch (error) {
+    console.error('Error loading model:', error);
+  }
 }
 
 // Endpoint untuk prediksi
