@@ -4,6 +4,8 @@ const tf = require('@tensorflow/tfjs-node');
 const { Storage } = require('@google-cloud/storage');
 const { Firestore } = require('@google-cloud/firestore');
 const { v4: uuidv4 } = require('uuid');
+const path = require('path');
+const fs = require('fs');
 
 // Konfigurasi aplikasi
 const app = express();
@@ -26,12 +28,30 @@ const modelFileName = 'model.json';
 const firestore = new Firestore();
 const predictionsCollection = firestore.collection('predictions');
 
-// Load model dari Cloud Storage
+// Load model dari Cloud Storage ke lokal terlebih dahulu
 let model;
 async function loadModel() {
   try {
-    const modelPath = `gs://${bucket-mlgc-mita}/${model.json}`;
-    model = await tf.loadGraphModel(modelPath);
+    // Unduh file model JSON
+    const destination = path.resolve(__dirname, modelFileName);
+    await storage.bucket(bucketName).file(modelFileName).download({ destination });
+    console.log(`Model downloaded to: ${destination}`);
+
+    // Unduh file shard (contoh group1-shard1of4.bin)
+    const shardFilePattern = /group1-shard(\d+)of(\d+).bin/; // Regex untuk menangkap nama file shard
+    const files = await storage.bucket(bucketName).getFiles();
+
+    // Mengunduh semua file shard
+    for (const file of files[0]) {
+      if (shardFilePattern.test(file.name)) {
+        const shardDestination = path.resolve(__dirname, path.basename(file.name));
+        await file.download({ destination: shardDestination });
+        console.log(`Downloaded shard: ${shardDestination}`);
+      }
+    }
+
+    // Muat model setelah semua file terunduh
+    model = await tf.loadGraphModel(`file://${destination}`);
     console.log('Model loaded successfully!');
   } catch (error) {
     console.error('Error loading model:', error);
@@ -90,6 +110,6 @@ app.get('/', (req, res) => res.send('Backend is running!'));
 
 // Start server
 app.listen(port, async () => {
-  await loadModel();
+  await loadModel();  // Pastikan model diload saat server mulai
   console.log(`Server is running on http://localhost:${port}`);
 });
