@@ -1,11 +1,9 @@
 const express = require('express');
 const multer = require('multer');
 const tf = require('@tensorflow/tfjs-node');
-const { Storage } = require('@google-cloud/storage');
 const { Firestore } = require('@google-cloud/firestore');
 const { v4: uuidv4 } = require('uuid');
-const path = require('path');
-const fs = require('fs');
+require('dotenv').config();
 
 // Konfigurasi aplikasi
 const app = express();
@@ -19,39 +17,19 @@ const upload = multer({
   limits: { fileSize: 1000000 },
 });
 
-// Inisialisasi Google Cloud Storage
-const storage = new Storage();
-const bucketName = 'bucket-mlgc-mita';
-const modelFileName = 'model.json';
 
 // Inisialisasi Firestore
-const firestore = new Firestore();
+const firestore = new Firestore({
+  projectId: process.env.PROJECT_ID,
+  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS
+});
 const predictionsCollection = firestore.collection('predictions');
 
 // Load model dari Cloud Storage ke lokal terlebih dahulu
 let model;
 async function loadModel() {
   try {
-    // Unduh file model JSON
-    const destination = path.resolve(__dirname, modelFileName);
-    await storage.bucket(bucketName).file(modelFileName).download({ destination });
-    console.log(`Model downloaded to: ${destination}`);
-
-    // Unduh file shard (contoh group1-shard1of4.bin)
-    const shardFilePattern = /group1-shard(\d+)of(\d+).bin/; // Regex untuk menangkap nama file shard
-    const files = await storage.bucket(bucketName).getFiles();
-
-    // Mengunduh semua file shard
-    for (const file of files[0]) {
-      if (shardFilePattern.test(file.name)) {
-        const shardDestination = path.resolve(__dirname, path.basename(file.name));
-        await file.download({ destination: shardDestination });
-        console.log(`Downloaded shard: ${shardDestination}`);
-      }
-    }
-
-    // Muat model setelah semua file terunduh
-    model = await tf.loadGraphModel(`file://${destination}`);
+    model = await tf.loadGraphModel(process.env.MODEL_URL);
     console.log('Model loaded successfully!');
   } catch (error) {
     console.error('Error loading model:', error);
@@ -59,51 +37,108 @@ async function loadModel() {
 }
 
 // Endpoint untuk prediksi
-app.post('/predict', upload.single('image'), async (req, res) => {
+app.post('/predict', (req, res) => {
+  const uploadForm = upload.single('image');
+  uploadForm(req, res, async error=> {
+    if (error instanceof multer.MulterError) {
+      return res.status(413).json({ status: 'fail', message: 'Payload content length greater than maximum allowed: 1000000' });
+    }
+    try {
+      // Validasi file
+      if (!req.file) {
+        return res.status(400).json({ status: 'fail', message: 'Terjadi kesalahan dalam melakukan prediksi' });
+      }
+  
+      // Konversi buffer ke tensor
+      const buffer = req.file.buffer;
+      const imageTensor = tf.node.decodeImage(buffer)
+        .resizeNearestNeighbor([224, 224])
+        .expandDims(0)
+        .toFloat()
+  
+      // Prediksi
+      const prediction = model.predict(imageTensor);
+      const predictionValue = prediction.dataSync()[0]; // Nilai prediksi
+      const result = predictionValue > 0.5 ? 'Cancer' : 'Non-cancer';
+      const suggestion = result === 'Cancer'
+        ? 'Segera periksa ke dokter!'
+        : 'Penyakit kanker tidak terdeteksi.';
+  
+      // Buat respons
+      const id = uuidv4();
+      const createdAt = new Date().toISOString();
+      const responseData = { id, result, suggestion, createdAt };
+  
+      // Simpan ke Firestore
+      await predictionsCollection.doc(id).set(responseData);
+  
+      // Kirim respons
+      res.status(201).json({
+        status: 'success',
+        message: 'Model is predicted successfully',
+        data: responseData,
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(400).json({
+        status: 'fail',
+        message: 'Terjadi kesalahan dalam melakukan prediksi',
+      });
+    }
+  })
+});
+
+// Define the /predict/histories endpoint
+app.get('/predict/histories', async (req, res) => {
   try {
-    // Validasi file
-    if (!req.file) {
-      return res.status(400).json({ status: 'fail', message: 'No file uploaded' });
+    // Reference to the Firestore collection where prediction histories are stored
+    const historiesCollection = firestore.collection('prediction_histories');
+
+    // Fetch all documents from the collection
+    const snapshot = await historiesCollection.get();
+
+    if (snapshot.empty) {
+      return res.status(200).json({
+        status: 'success',
+        data: [],
+      });
     }
 
-    // Konversi buffer ke tensor
-    const buffer = req.file.buffer;
-    const imageTensor = tf.node.decodeImage(buffer, 3)
-      .resizeNearestNeighbor([224, 224])
-      .expandDims(0)
-      .toFloat()
-      .div(255.0);
+    // Format the response data
+    const histories = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        history: {
+          result: data.result,
+          createdAt: data.createdAt,
+          suggestion: data.suggestion,
+          id: doc.id,
+        },
+      };
+    });
 
-    // Prediksi
-    const prediction = model.predict(imageTensor);
-    const predictionValue = prediction.dataSync()[0]; // Nilai prediksi
-    const result = predictionValue > 0.5 ? 'Cancer' : 'Non-cancer';
-    const suggestion = result === 'Cancer'
-      ? 'Segera periksa ke dokter!'
-      : 'Penyakit kanker tidak terdeteksi.';
-
-    // Buat respons
-    const id = uuidv4();
-    const createdAt = new Date().toISOString();
-    const responseData = { id, result, suggestion, createdAt };
-
-    // Simpan ke Firestore
-    await predictionsCollection.doc(id).set(responseData);
-
-    // Kirim respons
+    // Send the response
     res.status(200).json({
       status: 'success',
-      message: 'Model is predicted successfully',
-      data: responseData,
+      data: histories,
     });
   } catch (error) {
-    console.error(error);
-    res.status(400).json({
-      status: 'fail',
-      message: 'Terjadi kesalahan dalam melakukan prediksi',
+    console.error('Error fetching prediction histories:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch prediction histories',
+    });
+
+    // Tangani error server dengan status 500
+    res.status(500).json({
+      status: "fail",
+      message: "Failed to retrieve prediction histories"
     });
   }
 });
+
+
 
 // Endpoint untuk cek server
 app.get('/', (req, res) => res.send('Backend is running!'));
@@ -112,4 +147,6 @@ app.get('/', (req, res) => res.send('Backend is running!'));
 app.listen(port, '0.0.0.0', async () => {
     await loadModel();
     console.log(`Server is running on http://localhost:${port}`);
-  });  
+  });
+
+
