@@ -92,36 +92,38 @@ app.post('/predict', (req, res) => {
 app.get('/predict/histories', async (req, res) => {
   try {
     // Reference to the Firestore collection where prediction histories are stored
-    const historiesCollection = firestore.collection('prediction_histories');
+    const historiesCollection = firestore.collection('predictions');
 
     // Fetch all documents from the collection
     const snapshot = await historiesCollection.get();
 
-    if (snapshot.empty) {
-      return res.status(200).json({
-        status: 'success',
-        data: [],
-      });
-    }
+    // if (snapshot.empty) {
+    //   return res.status(200).json({
+    //     status: 'success',
+    //     data: [],
+    //   });
+    // }
 
     // Format the response data
-    const histories = snapshot.docs.map(doc => {
+    const result=[]
+    const histories = snapshot.forEach(doc => {
       const data = doc.data();
-      return {
-        id: doc.id,
+      const d= {
+        id: data.id,
         history: {
           result: data.result,
           createdAt: data.createdAt,
           suggestion: data.suggestion,
-          id: doc.id,
+          id: data.id,
         },
       };
+      result.push(d)
     });
 
     // Send the response
     res.status(200).json({
       status: 'success',
-      data: histories,
+      data: result,
     });
   } catch (error) {
     console.error('Error fetching prediction histories:', error);
